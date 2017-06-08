@@ -1,0 +1,294 @@
+#!/usr/bin/python3
+
+"""
+Parse, filter and change (by regex) an EPG xml file
+For more info and use: tv_grab_xml -h
+
+### Example
+* First start, configure the grabber
+  tv_grab_xml --configure --xml-source http://www.epg-guide.com/it.gz --config-file config.json
+* Execute the grabber, specifying xmltv source and config file
+  tv_grab_xml --xml-source /path/to/epg.xml --config-file config.json
+* Execute the grabber with default config file
+  tv_grab_xml
+
+TODO:
+* add some try catch
+"""
+
+import re
+import sys
+import json
+from pathlib import Path
+
+try:
+    import xml.etree.cElementTree as XmlParser
+except ImportError:
+    import xml.etree.ElementTree as XmlParser
+
+""" Authorship information """
+__author__ = 'Emanuele Palombo'
+__copyright__ = 'Copyright (c) 2017 BastarDog'
+__credits__ = ['Emanuele Palombo']
+__license__ = 'GPL'
+__version__ = '0.6b'
+__maintainer__ = 'Emanuele Palombo'
+__email__ = "no@spam.com"
+__status__ = "Development"
+
+""" Global vars """
+_DESCRIPTION = 'Parse, filter and change (by regex) an EPG xml file'
+
+# script path (__script_path.name for script name)
+_SCRIPT_PATH = Path(sys.argv[0])
+# script file absolute path
+_SCRIPT_ABS_PATH = _SCRIPT_PATH.resolve().parent
+# confif file absolute path
+_CONFIG_FILE = Path('~/.xmltv/{}.conf.json'.format(_SCRIPT_PATH.stem)).expanduser()
+
+
+def main():
+    # script argument parser
+    (parser, args) = manage_args()
+
+    # config dictionary (by config json file)
+    config = None
+
+    # read json CONFIG_FILE
+    if args.configure is False:
+        if args.config_file.is_file() is True:
+
+            # read json CONFIG_FILE
+            with args.config_file.open('r') as f:
+
+                config = json.load(f)
+
+                # remove '## HELP ##' (fake channel)
+                del config['channels']['## HELP ##']
+
+                # set XML_SOURCE from CONFIG_FILE (if not already set by arg)
+                if args.xml_source is None:
+                    args.xml_source = config['xml-source']
+        else:
+            parser.error("'{}' CONFIG_FILE don't exist!".format(args.config_file))
+
+    # XML_SOURCE content
+    xml_source_file = None
+
+    # read XML_SOURCE file/url
+    if args.xml_source is not None:
+        xml_source_file = read_source(args.xml_source)
+    else:
+        parser.error('XML_SOURCE must be set by args or at least in CONFIG_FILE')
+
+    # configuration mode (write CONFIG_FILE)
+    if args.configure is True:
+        write_config_json(args.config_file, args.xml_source, xml_source_file)
+        print('Configuration has been saved in: {} \n'.format(args.config_file))
+        sys.exit(0)
+
+    # write/print xmltv filtered/modified following config
+    write_xmltv(config, xml_source_file, args.output)
+
+    sys.exit(0)
+
+
+def manage_args():
+    """ Argument script printer/parser """
+
+    import argparse
+    parser = argparse.ArgumentParser(description=_DESCRIPTION, formatter_class=argparse.RawTextHelpFormatter)
+
+    parser_group_1 = parser.add_argument_group()
+    parser_group_1.add_argument('-c', '--configure', action='store_true', help='create config file (erase if already exist) with all channels listed')
+    parser_group_1.add_argument('-x', '--xml-source', action='store', help='xmltv xml file path or url (also gz)')
+    parser_group_1.add_argument('-f', '--config-file', action='store', default=_CONFIG_FILE, help='config file path (default %(default)s)')
+    parser_group_1.add_argument('-o', '--output', action='store', type=argparse.FileType('w'), default=sys.stdout, help='write a file instead of print on stdout')
+
+    parser_group_2 = parser.add_argument_group('"fake" options', 'ignore these options are there only for allow a complaiant xmltv script')
+    parser_group_2.add_argument('-a', '--capabilities', action='store_true', help='preserve compatibilty with xmltv script')
+    parser_group_2.add_argument('-d', '--description', action='store_true', help='print description')
+    parser_group_2.add_argument('-v', '--version', action='version', version='%(prog)s {}\n{}\n\nWritten by {}'.format(__version__, __copyright__, __author__))
+
+    # script argument parser
+    args = parser.parse_args()
+
+    # check args combinations (args errors)
+    if args.configure is True and args.xml_source is None:
+        parser.error('with --configure must also set XML_SOURCE')
+
+    # --desription
+    if args.description is True:
+        print(_DESCRIPTION)
+        sys.exit(0)
+
+    # --capabilities
+    if args.capabilities is True:
+        print('baseline')
+        sys.exit(0)
+
+    # string CONFIG_FILE arg => Path object
+    if not isinstance(args.config_file, Path):
+        args.config_file = Path(args.config_file)
+
+    return parser, args
+
+
+def read_source(source):
+    """ Return file/url (unziped) content """
+
+    file = None
+
+    # XML_SOURCE is an url
+    # note: could be used urlparse
+    if is_url(source):
+
+        import urllib.request
+        file = urllib.request.urlopen(source)
+
+    # XML_SOURCE is a file
+    else:
+        file = open(source, 'r')
+
+    # XML_SOURCE is gziped (extract)
+    if source[-3:] == '.gz':
+        import gzip
+        file = gzip.GzipFile(mode='r', fileobj=file)
+
+    return file
+
+
+def write_config_json(config_file, xml_source, xml_source_file):
+    """ Write a config file following xml_source """
+
+    channels = {}
+
+    default_channel_value = {'hidden': False, 'replace': [{'xpath': '', 'attrib': '', 'regex': '', 'with': ''}]}
+
+    # foreach 'channel' elements => fill channels dictionary (will write it in config_file)
+    # note: 'iterparse' is used (instead of 'findall') for preserve memory
+    for event, element in XmlParser.iterparse(xml_source_file, events=('start', 'end')):
+        if event == 'start' and element.tag == 'channel':
+            channels[element.attrib['id']] = default_channel_value
+        element.clear()
+
+    # crete config_file path if not exist
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # write json config file, append one channel each line
+    with config_file.open('a') as f:
+        f.truncate(0)
+
+        f.write('{\n')
+
+        # plain url or absolute path
+        f.write('"xml-source": "{}",\n'.format(xml_source if is_url(xml_source) else Path(xml_source).resolve()))
+
+        f.write('"channels": {\n')
+
+        # fake json element, used as comment to help user
+        f.write('"## HELP ##": ')
+        json.dump({'hidden': 'true/false print channel. False is as remove entire channel line ',
+                   'replace': [
+                       {
+                           'xpath': "path to the 'channel' (sub)element where replace text/attrib value (eg. './icon[@src]'). \
+More info at: https://docs.python.org/3.6/library/xml.etree.elementtree.html#elementtree-xpath",
+                           'attrib': 'element attribute name to replace. If not exist replace text (optional)',
+                           'regex': "use regex groups (eg. '([a-z]*).jpg') to reuse them in 'with' (optional)",
+                           'with': r"string replacing the original. With regex, use '\1..\n' for groups"}
+                   ]},
+                  f, ensure_ascii=False, indent=4)
+
+        f.write(',\n')
+
+        # channels list
+        # note: for is used to write a channel each line (easy to delete/disable in the cfg file)
+        count_channel = len(channels)
+        for i, channel_id in enumerate(channels.keys()):
+            f.write('"{}": '.format(channel_id))
+            json.dump(channels[channel_id], f, ensure_ascii=False)
+            f.write(',\n' if (i < count_channel - 1) else '\n')
+
+        f.write('}}')
+
+
+def write_xmltv(config, xml_source_file, output):
+    """ Write/print xmltv filtered/modified following config """
+
+    # renamed id channels
+    channels_id_renamed = {}
+
+    # channels config dictionary (filtered by 'hidden')
+    channels = {channel_id: channel for channel_id, channel in config['channels'].items() if channel['hidden'] is False}
+
+    # get an iterable over xml elements
+    context = iter(XmlParser.iterparse(xml_source_file, events=('start', 'end')))
+    # get root element
+    _, xml_root = next(context)
+
+    # foreach xml elements
+    for event, element in context:
+
+        # element 'channel' => filter and modify elements in the XML_SOURCE following rules in CONFIG_FILE
+        if event == 'start' and element.tag == 'channel':
+
+            # element not present in CONFIG_FILE json => remove 'channel' element
+            if element.attrib['id'] not in channels:
+                xml_root.remove(element)
+
+            # replace xml attrib value
+            elif 'replace' in channels[element.attrib['id']]:
+
+                channel = channels[element.attrib['id']]
+
+                # foreach 'replace' item
+                for replace in channel['replace']:
+
+                    # 'xpath' key exist
+                    if 'xpath' in replace and len(replace['xpath']):
+
+                        # find sub-element by 'xpath'
+                        element_to_replace = element.find(replace['xpath'])
+
+                        # 'attrib' key exist => change attrib value (else => change text value)
+                        is_attrib = ('attrib' in replace and len(replace['attrib']))
+
+                        # replace by regex (and using groups)
+                        if 'regex' in replace and len(replace['regex']):
+                            new_value = re.sub(replace['regex'], replace['with'], element_to_replace.attrib[replace['attrib']] if is_attrib else element_to_replace.text)
+                        # simple substitution
+                        else:
+                            new_value = replace['with']
+
+                        # replace attrib else text value
+                        if is_attrib:
+                            # channel id renamed => save in the list 'channels_id_renamed'
+                            if element_to_replace.tag == 'channel' and replace['attrib'] == 'id':
+                                channels_id_renamed[element.attrib['id']] = new_value
+
+                            element_to_replace.attrib[replace['attrib']] = new_value
+                        else:
+                            element_to_replace.text = new_value
+
+        # element 'programme' => filter 'programme' and rename 'channel' id (look at 'channels_id_renamed')
+        if event == 'start' and element.tag == 'programme':
+
+            # element not exist in CONFIG_FILE json => remove 'programme' element
+            if element.attrib['channel'] not in channels:
+                xml_root.remove(element)
+            # rename channel id (following optional a 'replace' in CONFIG_FILE json on 'channel/id')
+            elif element.attrib['channel'] in channels_id_renamed:
+                element.attrib['channel'] = channels_id_renamed[element.attrib['channel']]
+
+    # print/write (see the argparse.add_argument('-o', ...)) the filter and modified xml
+    with output as f:
+        f.write("<?xml version='1.0' encoding='UTF-8'?>\n<!DOCTYPE tv SYSTEM 'xmltv.dtd'>\n")
+        XmlParser.ElementTree(xml_root).write(f, encoding='unicode')
+
+
+def is_url(url):
+    return any(protocol in url[:4] for protocol in ['http', 'ftp'])
+
+
+if __name__ == "__main__":
+    main()
