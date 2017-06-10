@@ -250,6 +250,10 @@ def write_xmltv(config, xml_source_file, output):
                         # find sub-element by 'xpath'
                         element_to_replace = element.find(replace['xpath'])
 
+                        # no element matched for replace
+                        if element_to_replace is None:
+                            continue
+
                         # 'attrib' key exist => change attrib value (else => change text value)
                         is_attrib = ('attrib' in replace and len(replace['attrib']))
 
