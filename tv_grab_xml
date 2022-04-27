@@ -77,7 +77,7 @@ def main():
 
     # read XML_SOURCE file/url
     if args.xml_source is not None:
-        xml_source_file = read_source(args.xml_source)
+        xml_source_file = read_source(args.xml_source, args.force_gzip)
     else:
         parser.error('XML_SOURCE must be set by args or at least in CONFIG_FILE')
 
@@ -89,6 +89,9 @@ def main():
 
     # write/print xmltv filtered/modified following config
     write_xmltv(config, xml_source_file, args.output)
+
+    # close file stream
+    xml_source_file.close()
 
     sys.exit(0)
 
@@ -102,6 +105,7 @@ def manage_args():
     parser_group_1 = parser.add_argument_group()
     parser_group_1.add_argument('-c', '--configure', action='store_true', help='create config file (erase if already exist) with all channels listed')
     parser_group_1.add_argument('-x', '--xml-source', action='store', help='xmltv xml file path or url (also gz)')
+    parser_group_1.add_argument('-g', '--force-gzip', action='store_true', default=False, help='force xml-source as gzip file')
     parser_group_1.add_argument('-f', '--config-file', action='store', default=_CONFIG_FILE, help='config file path (default %(default)s)')
     parser_group_1.add_argument('-o', '--output', action='store', type=argparse.FileType('w'), default=sys.stdout, help='write a file instead of print on stdout')
 
@@ -134,7 +138,7 @@ def manage_args():
     return parser, args
 
 
-def read_source(source):
+def read_source(source, force_gzip=False):
     """ Return file/url (unziped) content """
 
     file = None
@@ -143,15 +147,21 @@ def read_source(source):
     # note: could be used urlparse
     if is_url(source):
 
+        import ssl
         import urllib.request
-        file = urllib.request.urlopen(source)
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        file = urllib.request.urlopen(source, context=ctx)
 
     # XML_SOURCE is a file
     else:
-        file = open(source, 'r')
+        file = open(source, 'rb')
 
     # XML_SOURCE is gziped (extract)
-    if source[-3:] == '.gz':
+    if source[-3:] == '.gz' or force_gzip:
         import gzip
         file = gzip.GzipFile(mode='r', fileobj=file)
 
@@ -188,13 +198,13 @@ def write_config_json(config_file, xml_source, xml_source_file):
 
         # fake json element, used as comment to help user
         f.write('"## HELP ##": ')
-        json.dump({'hidden': 'true/false print channel. False is as remove entire channel line ',
+        json.dump({'hidden': 'true/false print channel. True is as remove entire channel line. (default: false)',
                    'replace': [
                        {
                            'xpath': "path to the 'channel' (sub)element where replace text/attrib value (eg. './icon[@src]'). \
 More info at: https://docs.python.org/3.6/library/xml.etree.elementtree.html#elementtree-xpath",
-                           'attrib': 'element attribute name to replace. If not exist replace text (optional)',
-                           'regex': "use regex groups (eg. '([a-z]*).jpg') to reuse them in 'with' (optional)",
+                           'attrib': 'element attribute name to replace. If not set, replace the content of the element (optional)',
+                           'regex': "use regex groups (eg. '([a-z]*).jpg') to reuse them in 'with' field (optional)",
                            'with': r"string replacing the original. With regex, use '\1..\n' for groups"}
                    ]},
                   f, ensure_ascii=False, indent=4)
