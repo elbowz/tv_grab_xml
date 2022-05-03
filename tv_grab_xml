@@ -14,6 +14,7 @@ For more info and use: tv_grab_xml -h
 
 TODO:
 * add some try catch
+* add attrib if not exist/match
 """
 
 import re
@@ -28,10 +29,10 @@ except ImportError:
 
 """ Authorship information """
 __author__ = 'Emanuele Palombo'
-__copyright__ = 'Copyright (c) 2017 BastarDog'
+__copyright__ = 'Copyright (c) 2022 BastarDog'
 __credits__ = ['Emanuele Palombo']
 __license__ = 'GPL'
-__version__ = '0.6b'
+__version__ = '0.8b'
 __maintainer__ = 'Emanuele Palombo'
 __email__ = "no@spam.com"
 __status__ = "Development"
@@ -60,7 +61,6 @@ def main():
 
             # read json CONFIG_FILE
             with args.config_file.open('r') as f:
-
                 config = json.load(f)
 
                 # remove '## HELP ##' (fake channel)
@@ -176,7 +176,7 @@ def write_config_json(config_file, xml_source, force_gzip, xml_source_file):
 
     channels = {}
 
-    default_channel_value = {'hidden': False, 'replace': [{'xpath': '', 'attrib': '', 'regex': '', 'with': ''}]}
+    default_channel_value = {'hidden': False, 'replace': [{'xpath': '', 'attrib': '', 'regex': '', 'with': ''}], 'add': [{'xpath': '', 'xml': ''}]}
 
     # foreach 'channel' elements => fill channels dictionary (will write it in config_file)
     # note: 'iterparse' is used (instead of 'findall') for preserve memory
@@ -210,6 +210,14 @@ More info at: https://docs.python.org/3.6/library/xml.etree.elementtree.html#ele
                            'attrib': 'element attribute name to replace. If not set, replace the content of the element (optional)',
                            'regex': "use regex groups (eg. '([a-z]*).jpg') to reuse them in 'with' field (optional)",
                            'with': r"string replacing the original. With regex, use '\1..\n' for groups"}
+                   ],
+                   'add': [
+                       {
+                           'xpath': "path to the 'channel' (sub)element where add/append the new xml. \
+More info at: https://docs.python.org/3.6/library/xml.etree.elementtree.html#elementtree-xpath",
+                           'attrib': 'attribute to set. It works as in replace (optional)',
+                           'xml': 'raw xml to append to element target selected by xpath'
+                       }
                    ]},
                   f, ensure_ascii=False, indent=4)
 
@@ -249,21 +257,18 @@ def write_xmltv(config, xml_source_file, output):
             # element not present in CONFIG_FILE json => remove 'channel' element
             if element.attrib['id'] not in channels:
                 xml_root.remove(element)
+                continue
+
+            channel = channels[element.attrib['id']]
 
             # replace xml attrib value
-            elif 'replace' in channels[element.attrib['id']]:
-
-                channel = channels[element.attrib['id']]
-
+            if 'replace' in channel:
                 # foreach 'replace' item
                 for replace in channel['replace']:
-
                     # 'xpath' key exist
                     if 'xpath' in replace and len(replace['xpath']):
-
                         # find sub-element by 'xpath'
                         element_to_replace = element.find(replace['xpath'])
-
                         # no element matched for replace
                         if element_to_replace is None:
                             continue
@@ -287,6 +292,29 @@ def write_xmltv(config, xml_source_file, output):
                             element_to_replace.attrib[replace['attrib']] = new_value
                         else:
                             element_to_replace.text = new_value
+
+            # add xml tag
+            if 'add' in channel:
+                # foreach 'add' item
+                for add in channel['add']:
+                    # 'xpath' key exist
+                    if 'xpath' in add and len(add['xpath']):
+                        # find sub-element by 'xpath'
+                        element_to_replace = element.find(add['xpath'])
+                        # no element matched for replace
+                        if element_to_replace is None:
+                            continue
+
+                        # 'attrib' key exist => add attrib value (else => add new element)
+                        is_attrib = ('attrib' in add and len(add['attrib']))
+                        new_value = add['xml']
+
+                        # replace attrib else text value
+                        if is_attrib:
+                            element_to_replace.set(add['attrib'], new_value)
+                        else:
+                            new_element = XmlParser.fromstring(add['xml'])
+                            element_to_replace.append(new_element)
 
         # element 'programme' => filter 'programme' and rename 'channel' id (look at 'channels_id_renamed')
         if event == 'start' and element.tag == 'programme':
