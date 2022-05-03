@@ -69,6 +69,9 @@ def main():
                 # set XML_SOURCE from CONFIG_FILE (if not already set by arg)
                 if args.xml_source is None:
                     args.xml_source = config['xml-source']
+
+                if args.force_gzip is False:
+                    args.force_gzip = True if config['force-gzip'] == 'True' else False
         else:
             parser.error("'{}' CONFIG_FILE don't exist!".format(args.config_file))
 
@@ -83,7 +86,7 @@ def main():
 
     # configuration mode (write CONFIG_FILE)
     if args.configure is True:
-        write_config_json(args.config_file, args.xml_source, xml_source_file)
+        write_config_json(args.config_file, args.xml_source, args.force_gzip, xml_source_file)
         print('Configuration has been saved in: {} \n'.format(args.config_file))
         sys.exit(0)
 
@@ -168,7 +171,7 @@ def read_source(source, force_gzip=False):
     return file
 
 
-def write_config_json(config_file, xml_source, xml_source_file):
+def write_config_json(config_file, xml_source, force_gzip, xml_source_file):
     """ Write a config file following xml_source """
 
     channels = {}
@@ -193,6 +196,7 @@ def write_config_json(config_file, xml_source, xml_source_file):
 
         # plain url or absolute path
         f.write('"xml-source": "{}",\n'.format(xml_source if is_url(xml_source) else Path(xml_source).resolve()))
+        f.write('"force-gzip": "{}",\n'.format(force_gzip))
 
         f.write('"channels": {\n')
 
